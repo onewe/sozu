@@ -43,6 +43,7 @@ fn main() -> anyhow::Result<()> {
         .to_http(None)
         .expect("Could not create HTTP listener");
 
+    // 使用 UnixStream 创建一个 channel , 分别是 command_channel 和 proxy_channel
     let (mut command_channel, proxy_channel): (
         Channel<WorkerRequest, WorkerResponse>,
         Channel<WorkerResponse, WorkerRequest>,

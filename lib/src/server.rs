@@ -492,19 +492,29 @@ impl Server {
 
     /// The server runs in a loop until a shutdown is ordered
     pub fn run(&mut self) {
+        // 创建一个 events 列表用于底层 epoll 填充时间
         let mut events = Events::with_capacity(1024); // TODO: make event capacity configurable?
+        // 记录 session manager 的 slab 的 长度
         self.last_sessions_len = self.sessions.borrow().slab.len();
 
+        // 记录最后一次 僵尸请求检查的时间
         self.last_zombie_check = Instant::now();
+        // 记录 loop 的开始时间
         self.loop_start = Instant::now();
 
         loop {
+            // 判断 current_poll_errors 是否达到 max_poll_errors
+            // 如果达到 max_poll_errors 则直接 crash
             self.check_for_poll_errors();
 
+            // 重置 loop start 时间 并获取 poll timeout 时间
             let timeout = self.reset_loop_time_and_get_timeout();
 
+            // 调用 poll 方法获取 events, timeout 由上面产生
             match self.poll.poll(&mut events, timeout) {
+                // poll error 清零
                 Ok(_) => self.current_poll_errors = 0,
+                // 增加 poll error 计数器
                 Err(error) => {
                     error!("Error while polling events: {:?}", error);
                     self.current_poll_errors += 1;

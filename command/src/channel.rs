@@ -430,10 +430,16 @@ impl<Tx: Debug + DeserializeOwned + Serialize, Rx: Debug + DeserializeOwned + Se
 {
     /// creates a channel pair: `(blocking_channel, nonblocking_channel)`
     pub fn generate(buffer_size: usize, max_buffer_size: usize) -> ChannelResult<Tx, Rx> {
+        // 创建一个unix socket pair, 由 mio 提供. 这个类似于管道 channel
+        // 这里的 command stream 是 channel 里面的 tx, proxy stream 是 channel 里面的 rx
         let (command, proxy) = MioUnixStream::pair().map_err(ChannelError::Read)?;
+        // 使用 proxy unix stream 创建一个 非阻塞 channel
         let proxy_channel = Channel::new(proxy, buffer_size, max_buffer_size);
+        // 使用 command unix stream 创建一个 非阻塞 channel
         let mut command_channel = Channel::new(command, buffer_size, max_buffer_size);
+        // 设置 command_channel 为阻塞模式
         command_channel.blocking()?;
+        // 返回 command_channel 和 proxy_channel
         Ok((command_channel, proxy_channel))
     }
 

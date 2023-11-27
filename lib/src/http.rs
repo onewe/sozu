@@ -474,12 +474,12 @@ impl L7ListenerHandler for HttpListener {
 }
 
 pub struct HttpProxy {
-    backends: Rc<RefCell<BackendMap>>,
-    clusters: HashMap<ClusterId, Cluster>,
-    listeners: HashMap<Token, Rc<RefCell<HttpListener>>>,
-    pool: Rc<RefCell<Pool>>,
-    registry: Registry,
-    sessions: Rc<RefCell<SessionManager>>,
+    backends: Rc<RefCell<BackendMap>>, // 后端列表
+    clusters: HashMap<ClusterId, Cluster>, // 集群列表
+    listeners: HashMap<Token, Rc<RefCell<HttpListener>>>, // 监听器列表
+    pool: Rc<RefCell<Pool>>, // 连接池
+    registry: Registry, // event loop 注册表
+    sessions: Rc<RefCell<SessionManager>>, // 会话管理器
 }
 
 impl HttpProxy {
@@ -504,13 +504,17 @@ impl HttpProxy {
         config: HttpListenerConfig,
         token: Token,
     ) -> Result<Token, ProxyError> {
+        // 从 listener 列表中获取 一个 listener
         match self.listeners.entry(token) {
+            // 判断 指定 token 的listener 是否存在
             Entry::Vacant(entry) => {
+                // 如果指定 token 的listener 不存在则创建一个 listener
                 let http_listener =
                     HttpListener::new(config, token).map_err(ProxyError::AddListener)?;
                 entry.insert(Rc::new(RefCell::new(http_listener)));
                 Ok(token)
             }
+            // 如果指定的 token 的 listener 已经存在则返回错误
             _ => Err(ProxyError::ListenerAlreadyPresent),
         }
     }
@@ -999,15 +1003,21 @@ pub fn start_http_worker(
 ) -> anyhow::Result<()> {
     use crate::server;
 
+    // 使用 mio 创建一个 poll
     let event_loop = Poll::new().with_context(|| "could not create event loop")?;
 
+    // 创建一个 pool, 用于缓存 buffer. 缓存 buffer 的数量取决于 max_buffers
+    // 每个 buffer 的容量取决于 buffer_size
     let pool = Rc::new(RefCell::new(Pool::with_capacity(
         1,
         max_buffers,
         buffer_size,
     )));
+    // 创建一个 Map 用于缓存 后端, key 是 ClusterId , value 是 backend 集合
     let backends = Rc::new(RefCell::new(BackendMap::new()));
+    // 创建一个 max_buffers 大小的 slab, 用于缓存 session
     let mut sessions: Slab<Rc<RefCell<dyn ProxySession>>> = Slab::with_capacity(max_buffers);
+    // 分别为 channel、timer and metrics 创建 session
     {
         let entry = sessions.vacant_entry();
         info!("taking token {:?} for channel", entry.key());
@@ -1030,6 +1040,7 @@ pub fn start_http_worker(
         })));
     }
 
+    // 创建一个 session 并生成一个 token
     let token = {
         let entry = sessions.vacant_entry();
         let key = entry.key();
@@ -1040,19 +1051,25 @@ pub fn start_http_worker(
     };
 
     let address = config.address.clone();
+    // 创建一个 session manager, max_buffers 决定了 session manager 的大小, 相当于间接的决定了整个系统的最大连接数
     let sessions = SessionManager::new(sessions, max_buffers);
+    // 从 event loop 中创建一个 registry
     let registry = event_loop
         .registry()
         .try_clone()
         .with_context(|| "Failed at creating a registry")?;
+    // 创建一个 http proxy
     let mut proxy = HttpProxy::new(registry, sessions.clone(), pool.clone(), backends.clone());
+    // 添加一个监听器
     let _ = proxy.add_listener(config, token);
+    // 把指定 address 的监听器设置为活动的
     let _ = proxy.activate_listener(
         &address
             .parse()
             .with_context(|| "Could not parse socket address")?,
         None,
     );
+    // 创建一对 unix stream
     let (scm_server, scm_client) =
         UnixStream::pair().with_context(|| "Failed at creating scm stream sockets")?;
     let client_scm_socket =
@@ -1060,6 +1077,7 @@ pub fn start_http_worker(
     let server_scm_socket =
         ScmSocket::new(scm_server.as_raw_fd()).with_context(|| "Could not create scm socket")?;
 
+    // 通过 client_scm_socket 发送 Listeners
     if let Err(e) = client_scm_socket.send_listeners(&Listeners {
         http: Vec::new(),
         tls: Vec::new(),
@@ -1074,16 +1092,16 @@ pub fn start_http_worker(
     };
 
     let mut server = Server::new(
-        event_loop,
-        channel,
-        server_scm_socket,
-        sessions,
-        pool,
-        backends,
-        Some(proxy),
+        event_loop, // event loop
+        channel, // proxy channel
+        server_scm_socket, // scm server socket
+        sessions, // session manager
+        pool, // buffer pool
+        backends, // 后端列表
+        Some(proxy), // HttpProxy
         None,
         None,
-        server_config,
+        server_config, // server config
         None,
         false,
     )

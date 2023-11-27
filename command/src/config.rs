@@ -420,14 +420,19 @@ impl ListenerBuilder {
 
     /// Assign the timeouts of the config to this listener, only if timeouts did not exist
     fn assign_config_timeouts(&mut self, config: &Config) {
+        // 设置前端超时时间
         self.front_timeout = Some(self.front_timeout.unwrap_or(config.front_timeout));
+        // 设置后端超时时间
         self.back_timeout = Some(self.back_timeout.unwrap_or(config.back_timeout));
+        // 设置连接超时时间
         self.connect_timeout = Some(self.connect_timeout.unwrap_or(config.connect_timeout));
+        // 设置请求超时时间
         self.request_timeout = Some(self.request_timeout.unwrap_or(config.request_timeout));
     }
 
     /// build an HTTP listener with config timeouts, using defaults if no config is provided
     pub fn to_http(&mut self, config: Option<&Config>) -> Result<HttpListenerConfig, ConfigError> {
+        // 判断是否是 http 协议, 如果不是 http 协议则返回错误
         if self.protocol != Some(ListenerProtocol::Http) {
             return Err(ConfigError::WrongListenerProtocol {
                 expected: ListenerProtocol::Http,
@@ -435,26 +440,41 @@ impl ListenerBuilder {
             });
         }
 
+        // 判断是否具有 config 对象, 如果用则使用 config 对象的配置来初始化 timeout 相关配置
         if let Some(config) = config {
+            // 配置 timeout
             self.assign_config_timeouts(config);
         }
 
+        // answer_404 文件内容
+        // answer_503 文件内容
         let (answer_404, answer_503) = self.get_404_503_answers()?;
 
+        // 解析 listener 的 SocketAddr 地址
         let _address = self.parse_address()?;
 
+        // 解析 listener 的 public socket address 地址
         let _public_address = self.parse_public_address()?;
 
         let configuration = HttpListenerConfig {
             address: self.address.clone(),
             public_address: self.public_address.clone(),
+            // 默认是非 expect_proxy 模式, 这种和 proxy 协议有关 可以参考 
+            // https://github.com/sozu-proxy/sozu/blob/main/doc/configure.md#proxy-protocol
             expect_proxy: self.expect_proxy.unwrap_or(false),
+            // 默认值 SOZUBALANCEID, 表示使用 cookie 来实现 sticky session
             sticky_name: self.sticky_name.clone(),
+            // 前端超时时间 默认 60s
             front_timeout: self.front_timeout.unwrap_or(DEFAULT_FRONT_TIMEOUT),
+            // 后端超时时间 默认 30s
             back_timeout: self.back_timeout.unwrap_or(DEFAULT_BACK_TIMEOUT),
+            // 连接超时时间 默认 3s
             connect_timeout: self.connect_timeout.unwrap_or(DEFAULT_CONNECT_TIMEOUT),
+            // 请求超时时间 默认 10s
             request_timeout: self.request_timeout.unwrap_or(DEFAULT_REQUEST_TIMEOUT),
+            // 404 页面内容
             answer_404,
+            // 503 页面内容
             answer_503,
             ..Default::default()
         };
@@ -599,13 +619,19 @@ impl ListenerBuilder {
     /// Get the 404 and 503 answers from the file system using the provided paths,
     /// if none, defaults to HTML files in the sozu assets
     fn get_404_503_answers(&self) -> Result<(String, String), ConfigError> {
+        // 判断是否配置了 404 的 html 文件, 如果没有则使用默认的 404 html 文件
         let answer_404 = match &self.answer_404 {
+            // 如果配置了,则尝试打开文件并读取文件内容
             Some(a_404_path) => open_and_read_file(a_404_path)?,
+            // 打开并读取默认的 404 html 文件
             None => String::from(include_str!("../assets/404.html")),
         };
 
+        // 判断是否配置了 504 的 html 文件, 如果没有则使用默认的 503 html 文件
         let answer_503 = match &self.answer_503 {
+            // 如果配置了,则尝试打开文件并读取文件内容
             Some(a_503_path) => open_and_read_file(a_503_path)?,
+            // 打开并读取默认的 503 html 文件
             None => String::from(include_str!("../assets/503.html")),
         };
         Ok((answer_404, answer_503))
