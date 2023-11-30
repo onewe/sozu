@@ -79,22 +79,26 @@ impl ScmSocket {
 
     /// Send listeners (socket addresses and file descriptors) via an scm socket
     pub fn send_listeners(&self, listeners: &Listeners) -> Result<(), ScmSocketError> {
+        // 把 listeners 转换为 ListenersCount, 只保留 socket 地址
         let listeners_count = ListenersCount {
             http: listeners.http.iter().map(|t| t.0).collect(),
             tls: listeners.tls.iter().map(|t| t.0).collect(),
             tcp: listeners.tcp.iter().map(|t| t.0).collect(),
         };
 
+        // 转换为 json 字符串
         let message = serde_json::to_string(&listeners_count)
             .map(|s| s.into_bytes())
             .unwrap_or_else(|_| Vec::new());
 
+        // 提取出所有的 file descriptors
         let mut file_descriptors: Vec<RawFd> = Vec::new();
 
         file_descriptors.extend(listeners.http.iter().map(|t| t.1));
         file_descriptors.extend(listeners.tls.iter().map(|t| t.1));
         file_descriptors.extend(listeners.tcp.iter().map(|t| t.1));
 
+        // 发送
         self.send_msg_and_fds(&message, &file_descriptors)
     }
 

@@ -1060,9 +1060,9 @@ pub fn start_http_worker(
         .with_context(|| "Failed at creating a registry")?;
     // 创建一个 http proxy
     let mut proxy = HttpProxy::new(registry, sessions.clone(), pool.clone(), backends.clone());
-    // 添加一个监听器
+    // 添加一个监听器 这里的监听器就是 之前 config 配置的监听器
     let _ = proxy.add_listener(config, token);
-    // 把指定 address 的监听器设置为活动的
+    // 把指定 address 的监听器设置为活动的, 让监听器监听端口
     let _ = proxy.activate_listener(
         &address
             .parse()

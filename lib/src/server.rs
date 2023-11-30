@@ -355,6 +355,8 @@ impl Server {
             // initializing feature flags
         });
 
+        // 把 proxy channel 注册到 epoll, token 默认为 0, 感兴趣的事件为 可读 和 可写
+        // 这个 channel 用于接受 command channel 的命令
         poll.registry()
             .register(
                 &mut channel,
@@ -364,15 +366,19 @@ impl Server {
             .with_context(|| "should register the channel")?;
 
         METRICS.with(|metrics| {
+            // 这个 metrics socket 在前面就已经初始化
             if let Some(sock) = (*metrics.borrow_mut()).socket_mut() {
+                // 把 metrics socket 注册到 epoll, token 默认为 2, 感兴趣的事件为 可写
                 poll.registry()
                     .register(sock, Token(2), Interest::WRITABLE)
                     .expect("should register the metrics socket");
             }
         });
 
+        // 获取当前的 slab 的长度
         let base_sessions_count = sessions.borrow().slab.len();
 
+        // 创建一个 http proxy
         let http = Rc::new(RefCell::new(match http {
             Some(http) => http,
             None => {
@@ -384,6 +390,7 @@ impl Server {
             }
         }));
 
+        // 创建一个 https proxy
         let https = Rc::new(RefCell::new(match https {
             Some(https) => https,
             None => {
@@ -396,6 +403,7 @@ impl Server {
             }
         }));
 
+        // 创建一个 tcp proxy
         let tcp = Rc::new(RefCell::new(match tcp {
             Some(tcp) => tcp,
             None => {
@@ -408,35 +416,58 @@ impl Server {
         }));
 
         let mut server = Server {
+            // 接受请求超时时间
             accept_queue_timeout: Duration::seconds(i64::from(server_config.accept_queue_timeout)),
+            // 接受请求队列
             accept_queue: VecDeque::new(),
+            // 接受请求的 ready 集合
             accept_ready: HashSet::new(),
+            // 后端列表
             backends,
+            // slab 的长度 session 的数量
             base_sessions_count,
+            // proxy channel
             channel,
+            // config state
             config_state: ConfigState::new(),
+            // 当前 poll error 的数量
             current_poll_errors: 0,
+            // http proxy
             http,
+            // https proxy
             https,
             last_sessions_len: 0, // to be reset on server run
+            // 最后一次 shutdown 的时间
             last_shutting_down_message: None,
+            // 最后一次检查僵尸请求的时间
             last_zombie_check: Instant::now(), // to be reset on server run
+            // loop 开始的时间
             loop_start: Instant::now(),        // to be reset on server run
+            // 最大 poll errors 默认为 10000
             max_poll_errors: 10000,            // TODO: make it configurable?
+            // poll timeout 默认 1000
             poll_timeout: Some(Duration::milliseconds(1000)), // TODO: make it configurable?
+            // epoll
             poll,
+            // BufferMetadata 池
             pool,
             scm_listeners: None,
             scm,
+            // session manager
             sessions,
+            // 应该在什么时间点进行 poll
             should_poll_at: None,
+            // 关闭消息
             shutting_down: None,
+            // tcp 代理
             tcp,
+            // 僵尸消息检查周期
             zombie_check_interval: Duration::seconds(i64::from(
                 server_config.zombie_check_interval,
             )),
         };
 
+        // config state 是从配置文件中产生, 初始化配置
         // initialize the worker with the state we got from a file
         if let Some(state) = config_state {
             for (counter, request) in state.generate_requests().iter().enumerate() {
@@ -452,6 +483,7 @@ impl Server {
 
             // do not send back answers to the initialization messages
             QUEUE.with(|queue| {
+                // 清空 queue
                 (*queue.borrow_mut()).clear();
             });
         }
@@ -503,11 +535,11 @@ impl Server {
         self.loop_start = Instant::now();
 
         loop {
-            // 判断 current_poll_errors 是否达到 max_poll_errors
+            // 判断 current_poll_errors 是否达到 max_poll_errors 默认为 10000
             // 如果达到 max_poll_errors 则直接 crash
             self.check_for_poll_errors();
 
-            // 重置 loop start 时间 并获取 poll timeout 时间
+            // 重置 loop start 时间 并获取 poll timeout 时间, 默认为 1000s
             let timeout = self.reset_loop_time_and_get_timeout();
 
             // 调用 poll 方法获取 events, timeout 由上面产生
@@ -640,6 +672,7 @@ impl Server {
     }
 
     fn reset_loop_time_and_get_timeout(&mut self) -> Option<std::time::Duration> {
+        // 获取当前时间
         let now = Instant::now();
         time!(
             "event_loop_time",
@@ -647,8 +680,11 @@ impl Server {
         );
 
         let timeout = match self.should_poll_at.as_ref() {
+            // 如果 should_poll_at(相当于指定在何时需要 poll) 参数为 None 那么直接返回 poll_timeout
             None => self.poll_timeout,
             Some(i) => {
+                // 判断 should_poll_at 是否小于等于当前时间, 如果小于等于当前时间, 则返回 poll_timeout
+                // 如果 should_poll_at 大于当前时间, 则返回 should_poll_at - 当前时间
                 if *i <= now {
                     self.poll_timeout
                 } else {

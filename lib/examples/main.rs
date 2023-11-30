@@ -38,9 +38,9 @@ fn main() -> anyhow::Result<()> {
     }
 
     info!("MAIN\tstarting up");
-
+    // 启动 metrics udp 监听端口
     sozu_lib::metrics::setup(
-        &"127.0.0.1:8125"
+        &"127.0.0.1:8125"// 远程的 metrics 监听端口与地址
             .parse()
             .with_context(|| "Could not parse address for metrics setup")?,
         "main",

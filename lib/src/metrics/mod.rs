@@ -132,6 +132,7 @@ pub fn setup<O: Into<String>>(
     use_tagged_metrics: bool,
     prefix: Option<String>,
 ) -> Result<(), MetricError> {
+    // 绑定 udp 监听端口
     let metrics_socket = udp_bind()?;
 
     debug!(
