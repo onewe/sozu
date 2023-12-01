@@ -24,15 +24,18 @@ pub struct Pool {
 
 impl Pool {
     pub fn with_capacity(minimum: usize, maximum: usize, buffer_size: usize) -> Pool {
+        // 初始化 BufferMetadata 池, 用于存储 BufferMetadata. minimum 初始化大小, maximum 最大大小, buffer_size 每个 BufferMetadata 的大小
         let mut inner = poule::Pool::with_extra(maximum, buffer_size);
         inner.grow_to(minimum);
         Pool { inner, buffer_size }
     }
 
     pub fn checkout(&mut self) -> Option<Checkout> {
+        // 判断当前 BufferMetadata 池是否已满, 并且还未达到 maximum_capacity. 如果是, 则扩容
         if self.inner.used() == self.inner.capacity()
             && self.inner.capacity() < self.inner.maximum_capacity()
         {
+            // 进行扩容, 默认扩容为当前容量的两倍, 但是不能超过最大容量
             self.inner.grow_to(std::cmp::min(
                 self.inner.capacity() * 2,
                 self.inner.maximum_capacity(),
@@ -43,6 +46,7 @@ impl Pool {
                 std::cmp::min(self.inner.capacity() * 2, self.inner.maximum_capacity())
             );
         }
+
         let capacity = self.buffer_size;
         self.inner
             .checkout(|| {
@@ -50,6 +54,7 @@ impl Pool {
                 BufferMetadata::new()
             })
             .map(|c| {
+                // 计数器加一
                 let old_buffer_count = BUFFER_COUNT.fetch_add(1, Ordering::SeqCst);
                 gauge!("buffer.number", old_buffer_count + 1);
                 Checkout { inner: c }
@@ -193,19 +198,30 @@ impl Checkout {
         }
     }
 
+    /**
+     * 从指定位置开始删除指定长度的数据
+     * 这个方法就是把指定位置和长度的数据给删除, 然后把剩下的数据向左移动
+     */
     pub fn delete_slice(&mut self, start: usize, length: usize) -> Option<usize> {
+        // 如果起始位置 + 长度 大于可用数据长度, 则返回 None, 因为会导致下面操作 crash
         if start + length >= self.available_data() {
             return None;
         }
 
         unsafe {
+            // 计算出起始位置
             let begin = self.inner.position + start;
+            // 计算出下一个结束位置
             let next_end = self.inner.end - length;
             ptr::copy(
+                // 删除的起始位置 + 删除的长度, 到当前数据的结束位置, 表示保留的数据段
                 self.inner.extra()[begin + length..self.inner.end].as_ptr(),
+                // 删除的其实位置到下一个结束位置, 表示删除的数据段
                 self.inner.extra_mut()[begin..next_end].as_mut_ptr(),
+                // 计算出保留的数据段的长度
                 self.inner.end - (begin + length),
             );
+            // 更新当前数据的结束位置
             self.inner.end = next_end;
         }
         Some(self.available_data())

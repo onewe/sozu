@@ -382,6 +382,10 @@ impl ProxySession for HttpSession {
 
 pub type Hostname = String;
 
+/**
+ * 该 listener 实现了 2 个 handler
+ * 一个是 ListenerHandler 一个是 L7ListenerHandler
+ */
 pub struct HttpListener {
     active: bool,
     address: SocketAddr,
@@ -473,6 +477,9 @@ impl L7ListenerHandler for HttpListener {
     }
 }
 
+/***
+ * HttpProxy 主要用于管理 listener
+ */
 pub struct HttpProxy {
     backends: Rc<RefCell<BackendMap>>, // 后端列表
     clusters: HashMap<ClusterId, Cluster>, // 集群列表
@@ -507,6 +514,7 @@ impl HttpProxy {
         // 从 listener 列表中获取 一个 listener
         match self.listeners.entry(token) {
             // 判断 指定 token 的listener 是否存在
+            // Vacant 表示未占用
             Entry::Vacant(entry) => {
                 // 如果指定 token 的listener 不存在则创建一个 listener
                 let http_listener =
@@ -520,11 +528,13 @@ impl HttpProxy {
     }
 
     pub fn get_listener(&self, token: &Token) -> Option<Rc<RefCell<HttpListener>>> {
+        // 从 listener 集合中返回一个 listener
         self.listeners.get(token).map(Clone::clone)
     }
 
     pub fn remove_listener(&mut self, remove: RemoveListener) -> Result<(), ProxyError> {
         let len = self.listeners.len();
+        // 从 listener 集合中移除 address 等于 remove.address 的 listener
         self.listeners
             .retain(|_, l| l.borrow().address.to_string() != remove.address);
 
@@ -539,12 +549,14 @@ impl HttpProxy {
         addr: &SocketAddr,
         tcp_listener: Option<TcpListener>,
     ) -> Result<Token, ProxyError> {
+        // 从 listener 集合中获取 address 等于 addr 的 listener
         let listener = self
             .listeners
             .values()
             .find(|listener| listener.borrow().address == *addr)
             .ok_or(ProxyError::NoListenerFound(addr.to_owned()))?;
 
+        // 激活一个 listener
         listener
             .borrow_mut()
             .activate(&self.registry, tcp_listener)
@@ -555,6 +567,7 @@ impl HttpProxy {
     }
 
     pub fn give_back_listeners(&mut self) -> Vec<(SocketAddr, TcpListener)> {
+        // 从 listener 集合中获取所有 listener 中的 tcp listener
         self.listeners
             .iter()
             .filter_map(|(_, listener)| {
@@ -569,6 +582,7 @@ impl HttpProxy {
     }
 
     pub fn give_back_listener(&mut self, address: SocketAddr) -> Option<(Token, TcpListener)> {
+        // 从 listener 集合中获取 address 等于 address 的 listener 中的 tcp listener
         self.listeners
             .values()
             .find(|listener| listener.borrow().address == address)
@@ -583,7 +597,9 @@ impl HttpProxy {
     }
 
     pub fn add_cluster(&mut self, cluster: Cluster) -> Result<(), ProxyError> {
+        // 判断 cluster 是否配置了 answer_503
         if let Some(answer_503) = &cluster.answer_503 {
+            // 如果配置了 answer_503 则为所有的 listener 添加 answer_503
             for listener in self.listeners.values() {
                 listener
                     .borrow()
@@ -592,13 +608,16 @@ impl HttpProxy {
                     .add_custom_answer(&cluster.cluster_id, answer_503);
             }
         }
+        // 把 cluster 添加到 clusters 集合中
         self.clusters.insert(cluster.cluster_id.clone(), cluster);
         Ok(())
     }
 
     pub fn remove_cluster(&mut self, cluster_id: &str) -> Result<(), ProxyError> {
+        // 从 clusters 集合中移除 cluster_id
         self.clusters.remove(cluster_id);
 
+        // 为所有的 listener 移除 custom_answer key 为 cluster_id 的 answer
         for listener in self.listeners.values() {
             listener
                 .borrow()
@@ -617,6 +636,7 @@ impl HttpProxy {
             }
         })?;
 
+        // 从 listener 集合中获取 address 等于 front.address 的 listener
         let mut listener = self
             .listeners
             .values()
@@ -627,9 +647,11 @@ impl HttpProxy {
         let hostname = front.hostname.to_owned();
         let tags = front.tags.to_owned();
 
+        // listener 增加 http front
         listener
             .add_http_front(front)
             .map_err(ProxyError::AddFrontend)?;
+        // listener 设置 tags
         listener.set_tags(hostname, tags);
         Ok(())
     }
@@ -642,6 +664,7 @@ impl HttpProxy {
             }
         })?;
 
+        // 从 listener 集合中获取 address 等于 front.address 的 listener
         let mut listener = self
             .listeners
             .values()
@@ -651,10 +674,11 @@ impl HttpProxy {
 
         let hostname = front.hostname.to_owned();
 
+        // listener 移除 http front
         listener
             .remove_http_front(front)
             .map_err(ProxyError::RemoveFrontend)?;
-
+        // listener 移除 tags
         listener.set_tags(hostname, None);
         Ok(())
     }
@@ -716,6 +740,7 @@ impl HttpProxy {
 
 impl HttpListener {
     pub fn new(config: HttpListenerConfig, token: Token) -> Result<HttpListener, ListenerError> {
+        // 解析 config 中的 address 地址, 转换为 socketAddr
         let address = config
             .address
             .parse::<SocketAddr>()
@@ -724,17 +749,17 @@ impl HttpListener {
                 error: parse_error.to_string(),
             })?;
         Ok(HttpListener {
-            active: false,
-            address,
+            active: false, // 默认为未激活
+            address, // socket 地址
             answers: Rc::new(RefCell::new(HttpAnswers::new(
                 &config.answer_404,
                 &config.answer_503,
-            ))),
+            ))), // config 中配置的 404 answer 和 503 answer
             config,
-            fronts: Router::new(),
-            listener: None,
-            tags: BTreeMap::new(),
-            token,
+            fronts: Router::new(), // 空 router
+            listener: None, // 空 tcp listener
+            tags: BTreeMap::new(), // 空 tags 集合
+            token, // token 被用在 epoll 中
         })
     }
 
@@ -743,12 +768,16 @@ impl HttpListener {
         registry: &Registry,
         tcp_listener: Option<TcpListener>,
     ) -> Result<Token, ListenerError> {
+        // 如果 listener 已被激活则直接返回 token
         if self.active {
             return Ok(self.token);
         }
 
+        
         let mut listener = match tcp_listener {
+            // 如果 listener 未被激活且 存在 tcp listener, 则返回 tcp listener
             Some(tcp_listener) => tcp_listener,
+            // 如果 listener 未被激活且 不存在 tcp listener, 则创建一个 tcp listener 并进行绑定
             None => server_bind(self.config.address.clone()).map_err(|server_bind_error| {
                 ListenerError::Activation {
                     address: self.config.address.clone(),
@@ -757,6 +786,7 @@ impl HttpListener {
             })?,
         };
 
+        // 把 tcp listener 注册到 mio 到 epoll 中去, 并设置兴趣事件为 READABLE
         registry
             .register(&mut listener, self.token, Interest::READABLE)
             .map_err(ListenerError::SocketRegistration)?;
@@ -767,6 +797,7 @@ impl HttpListener {
     }
 
     pub fn add_http_front(&mut self, http_front: HttpFrontend) -> Result<(), ListenerError> {
+        // 新增 route
         self.fronts
             .add_http_front(&http_front)
             .map_err(ListenerError::AddFrontend)
@@ -774,6 +805,7 @@ impl HttpListener {
 
     pub fn remove_http_front(&mut self, http_front: HttpFrontend) -> Result<(), ListenerError> {
         debug!("removing http_front {:?}", http_front);
+        // 移除 route
         self.fronts
             .remove_http_front(&http_front)
             .map_err(ListenerError::RemoveFrontend)
@@ -875,6 +907,7 @@ impl ProxyConfiguration for HttpProxy {
     }
 
     fn accept(&mut self, token: ListenToken) -> Result<TcpStream, AcceptError> {
+        // accept 返回一个 tcp stream
         if let Some(listener) = self.listeners.get(&Token(token.0)) {
             listener.borrow_mut().accept()
         } else {
@@ -1008,6 +1041,8 @@ pub fn start_http_worker(
 
     // 创建一个 pool, 用于缓存 buffer. 缓存 buffer 的数量取决于 max_buffers
     // 每个 buffer 的容量取决于 buffer_size
+    // 这个 buffer 跟 channel 里面的 Buffer 一致, 只不过多了 delete replace insert 等操作
+    // 初始化的 poll 的最小容量为 1, 最大容量为 max_buffers, extra buffer 大小为 buffer_size
     let pool = Rc::new(RefCell::new(Pool::with_capacity(
         1,
         max_buffers,

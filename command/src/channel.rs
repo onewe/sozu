@@ -162,37 +162,47 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
 
     /// Handles readability by filling the front buffer with the socket data.
     pub fn readable(&mut self) -> Result<usize, ChannelError> {
+        // 判断当前 channel 是否是可读的, 如果是非可读的, 则返回错误
         if !(self.interest & self.readiness).is_readable() {
             return Err(ChannelError::Connection(None));
         }
 
+        // 字节读取数
         let mut count = 0usize;
         loop {
+            // 判断 front buf  是否还有空间缓存数据
             let size = self.front_buf.available_space();
+            // 如果 size 为 0 则代表 buf 已经满了, 则把 Ready::READABLE 从 interest 中移除
             if size == 0 {
                 self.interest.remove(Ready::READABLE);
                 break;
             }
 
+            // 从 socket 中读取数据到 front buf 中
             match self.sock.read(self.front_buf.space()) {
+                // 如果读取到的数据为 0, 代表 socket 已经关闭或者 huang up, 则把 interest 设置为 Ready::EMPTY
+                // readiness 移除 Ready::READABLE, 并且把 Ready::HUP 添加到 readiness 中
                 Ok(0) => {
                     self.interest = Ready::EMPTY;
                     self.readiness.remove(Ready::READABLE);
                     self.readiness.insert(Ready::HUP);
                     return Err(ChannelError::NoByteToRead);
                 }
+                // 读取 socket 发生错误, 如果错误类型为 WouldBlock, 则把 Ready::READABLE 从 readiness 中移除 
                 Err(read_error) => match read_error.kind() {
                     ErrorKind::WouldBlock => {
                         self.readiness.remove(Ready::READABLE);
                         break;
                     }
                     _ => {
+                        // 其他错误类型直接返回错误
                         self.interest = Ready::EMPTY;
                         self.readiness = Ready::EMPTY;
                         return Err(ChannelError::Read(read_error));
                     }
                 },
                 Ok(bytes_read) => {
+                    // 读取到数据, 则把读取到的数据大小加到 count 中
                     count += bytes_read;
                     self.front_buf.fill(bytes_read);
                 }
@@ -204,28 +214,38 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
 
     /// Handles writability by writing the content of the back buffer onto the socket
     pub fn writable(&mut self) -> Result<usize, ChannelError> {
+        // 判断当前 channel 是否是可写的, 如果是非可写的, 则返回错误
         if !(self.interest & self.readiness).is_writable() {
             return Err(ChannelError::Connection(None));
         }
 
+        // 字节写入数
         let mut count = 0usize;
         loop {
+            // 判断 back buf 是否拥有可写的数据
             let size = self.back_buf.available_data();
             if size == 0 {
+                // 如果 size 等于 0 则代表 buffer 中无可写的数据了
+                // 从 interest 中移除 Ready::WRITABLE 代表当前 buffer 不可写
                 self.interest.remove(Ready::WRITABLE);
                 break;
             }
 
+            // 把 back buf 中的数据写入到 socket 中
             match self.sock.write(self.back_buf.data()) {
+                // 写入数据为 0, 代表 socket 已经关闭或者 huang up, 则把 interest 设置为 Ready::EMPTY
                 Ok(0) => {
                     self.interest = Ready::EMPTY;
                     self.readiness.insert(Ready::HUP);
                     return Err(ChannelError::NoByteWritten);
                 }
+                // 写入数据不为 0, 增加写入数据的大小到 count 中, 并且从 back buf 中移除写入的数据
                 Ok(bytes_written) => {
                     count += bytes_written;
                     self.back_buf.consume(bytes_written);
                 }
+                // 如果发生错误, 则判断是否是 WouldBlock ,如果是 WouldBlock 则从 readiness 移除 Ready::WRITABLE
+                // 否则把 interest 设置为 Ready::EMPTY, readiness 设置为 Ready::EMPTY, 并且返回错误
                 Err(write_error) => match write_error.kind() {
                     ErrorKind::WouldBlock => {
                         self.readiness.remove(Ready::WRITABLE);
@@ -282,6 +302,7 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
     }
 
     /// Waits for the front buffer to be filled, and parses a message from it.
+    /// 阻塞读取消息, 并支持读取超时时间
     pub fn read_message_blocking_timeout(
         &mut self,
         timeout: Option<Duration>,
@@ -290,22 +311,28 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
 
         loop {
             if let Some(timeout) = timeout {
+                // 判断是否已经超时, 如果已经超时则直接抛出异常
                 if now.elapsed() >= timeout {
                     return Err(ChannelError::TimeoutReached(timeout));
                 }
             }
 
+            // 获取 buffer 中的数据切片[position..end], 并获取 0 的位置, 相当于是寻找结束符
             match self.front_buf.data().iter().position(|&x| x == 0) {
                 Some(position) => return self.read_and_parse_from_front_buffer(position),
                 None => {
+                    // 判断 buffer 是否已经满了
                     if self.front_buf.available_space() == 0 {
+                        // 如果 buffer 已经满了, 则判断 buffer 的容量是否已经达到 channel 中指定的最大容量, 如果达到最大容量则直接返回错误
                         if self.front_buf.capacity() == self.max_buffer_size {
                             return Err(ChannelError::BufferFull);
                         }
+                        // 如果没达到 channel 中指定的 buffer 的最大容量, 则进行扩容, 默认一次性扩容 5000
                         let new_size = min(self.front_buf.capacity() + 5000, self.max_buffer_size);
                         self.front_buf.grow(new_size);
                     }
 
+                    // 扩容之后继续从 socket 中读取数据到  buffer 中
                     match self
                         .sock
                         .read(self.front_buf.space())
@@ -320,11 +347,13 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
     }
 
     fn read_and_parse_from_front_buffer(&mut self, position: usize) -> Result<Rx, ChannelError> {
+        // 从 front buf 中读取数据, 并转换为 utf8 字符串
         let utf8_str = from_utf8(&self.front_buf.data()[..position])
             .map_err(|from_error| ChannelError::InvalidCharSet(from_error.to_string()))?;
-
+        // 字符串转换为 json
         let json_parsed = serde_json::from_str(utf8_str).map_err(ChannelError::Serde)?;
-
+        // 读取完数据之后更新 position , 并判断 position 位置是否超过 buffer 的 2分之1 如果超过则作 shift 操作,
+        // shit 操作就是把 buffer 中剩余的数据全部移动到最左侧, 并更新 position 为 0 , end 为移动字节数的数量
         self.front_buf.consume(position + 1);
         Ok(json_parsed)
     }
@@ -342,78 +371,99 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Channel<Tx, Rx> {
 
     /// Writes the message in the buffer, but NOT on the socket.
     /// you have to call channel.run() afterwards
+    /// 非阻塞写入数据, 把数据写入到 buffer 中, 并把 Ready::WRITABLE 添加到 interest 中, 
+    /// 并不直接写入到 socket, 所以后续需要调用 channel.run() flush buffer
     fn write_message_nonblocking(&mut self, message: &Tx) -> Result<(), ChannelError> {
+        // 把需要写入的数据转换为 byte 数组
         let message = match serde_json::to_string(message) {
             Ok(string) => string.into_bytes(),
             Err(_) => Vec::new(),
         };
 
+        // len + 1 这个 1表示后面新增一个结束符
         let message_len = message.len() + 1;
+        // 如果 消息长度大于 buffer 的可用空间, 则把 buffer 中的数据向左移动
         if message_len > self.back_buf.available_space() {
             self.back_buf.shift();
         }
 
+        // 如果移动之后依然大于
         if message_len > self.back_buf.available_space() {
+            // 如果消息长度填充了之后,剩余的空间加上 buffer 的容量大于 channel 中指定的最大容量, 则直接返回错误
             if message_len - self.back_buf.available_space() + self.back_buf.capacity()
                 > self.max_buffer_size
             {
                 return Err(ChannelError::MessageTooLarge(self.back_buf.capacity()));
             }
 
+            // 计算出能够容纳下消息的 buffer 的容量, 并进行扩容
             let new_length =
                 message_len - self.back_buf.available_space() + self.back_buf.capacity();
             self.back_buf.grow(new_length);
         }
 
+        // 写入数据到 buffer 中
         self.back_buf.write(&message).map_err(ChannelError::Write)?;
 
+        // 写入结束符
         self.back_buf
             .write(&b"\0"[..])
             .map_err(ChannelError::Write)?;
-
+        // 把 Ready::WRITABLE 添加到 interest 中
         self.interest.insert(Ready::WRITABLE);
 
         Ok(())
     }
 
     /// fills the back buffer with data AND writes on the socket
+    /// 阻塞写入数据, 把数据写入到 buffer 中.
     fn write_message_blocking(&mut self, message: &Tx) -> Result<(), ChannelError> {
+        // 把 message 转换成 byte 数组
         let message = match serde_json::to_string(message) {
             Ok(string) => string.into_bytes(),
             Err(_) => Vec::new(),
         };
 
+        // 计算 message 的长度 并 + 1, 这个 1 表示后面新增一个结束符
         let msg_len = &message.len() + 1;
+        // 判断 message 的长度是否大于 buffer 的可用空间, 如果大于则把 buffer 中的数据向左移动
         if msg_len > self.back_buf.available_space() {
             self.back_buf.shift();
         }
 
+        // 判断 message 的长度是否大于 buffer 的可用空间, 如果大于则进行扩容
         if msg_len > self.back_buf.available_space() {
+            // 如果消息长度填充了之后,剩余的空间加上 buffer 的容量大于 channel 中指定的最大容量, 则直接返回错误
             if msg_len - self.back_buf.available_space() + self.back_buf.capacity()
                 > self.max_buffer_size
             {
                 return Err(ChannelError::MessageTooLarge(self.back_buf.capacity()));
             }
-
+            // 计算出能够容纳下消息的 buffer 的容量, 并进行扩容
             let new_len = msg_len - self.back_buf.available_space() + self.back_buf.capacity();
             self.back_buf.grow(new_len);
         }
 
+        // 把 message 写入到 buffer 中
         self.back_buf.write(&message).map_err(ChannelError::Write)?;
 
+        // 把结束符写入到 buffer 中
         self.back_buf
             .write(&b"\0"[..])
             .map_err(ChannelError::Write)?;
 
         loop {
+            // 判断 back buf 中是否还有可写的数据
             let size = self.back_buf.available_data();
             if size == 0 {
                 break;
             }
 
+            // 把 back buf 中的数据写入到 socket 中
             match self.sock.write(self.back_buf.data()) {
                 Ok(0) => return Err(ChannelError::NoByteWritten),
                 Ok(bytes_written) => {
+                    // 调整 position index
                     self.back_buf.consume(bytes_written);
                 }
                 Err(_) => return Ok(()), // are we sure?
@@ -462,6 +512,9 @@ impl<Tx: Debug + Serialize, Rx: Debug + DeserializeOwned> Iterator for Channel<T
     }
 }
 
+/**
+ * 实现 Source trait, 用于注册到 mio 的 event loop 中
+ */
 use mio::{Interest, Registry, Token};
 impl<Tx, Rx> Source for Channel<Tx, Rx> {
     fn register(
