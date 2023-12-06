@@ -129,17 +129,25 @@ impl std::convert::From<mio::Interest> for Ready {
 impl std::convert::From<&mio::event::Event> for Ready {
     fn from(e: &mio::event::Event) -> Self {
         let mut r = Ready::EMPTY;
+        // 判断是否是可读事件
         if e.is_readable() {
+            // 插入可读事件
             r.insert(Ready::READABLE);
         }
+        // 判断是否是可写事件
         if e.is_writable() {
+            // 插入可写事件
             r.insert(Ready::WRITABLE);
         }
+        // 判断是否是错误事件
         if e.is_error() {
+            // 插入错误事件
             r.insert(Ready::ERROR);
         }
         //FIXME: handle HUP events
+        // 判断是否是 read 关闭事件或者 write 关闭事件
         if e.is_read_closed() || e.is_write_closed() {
+            // 表示 huang up 事件
             r.insert(Ready::HUP);
         }
 

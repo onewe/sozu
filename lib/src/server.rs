@@ -563,9 +563,12 @@ impl Server {
 
             self.send_queue();
 
+            // 从 epoll 获取的到事件集合
+            // 遍历集合
             for event in events.iter() {
                 match event.token() {
                     // this is the command channel
+                    // 如果 token 是 0, 则是 command channel
                     Token(0) => {
                         if event.is_error() {
                             error!("error reading from command channel");
@@ -575,11 +578,14 @@ impl Server {
                             error!("command channel was closed");
                             continue;
                         }
+                        // 把 epoll event 转换为 Ready
                         let ready = Ready::from(event);
+                        // 处理 command channel 的事件
                         self.channel.handle_events(ready);
 
                         // loop here because iterations has borrow issues
                         loop {
+                            // 如果 channel 有消息, 则设置 channel 的 interest 为可写
                             QUEUE.with(|queue| {
                                 if !(*queue.borrow()).is_empty() {
                                     self.channel.interest.insert(Ready::WRITABLE);
@@ -588,6 +594,7 @@ impl Server {
 
                             //trace!("WORKER[{}] channel readiness={:?}, interest={:?}, queue={} elements",
                             //  line!(), self.channel.readiness, self.channel.interest, self.queue.len());
+                            // 判断 channel 是否为 Ready::EMPTY 如果是则退出循环
                             if self.channel.readiness() == Ready::EMPTY {
                                 break;
                             }
@@ -618,6 +625,7 @@ impl Server {
                     }),
                     // ListenToken: 1 listener <=> 1 token
                     // ProtocolToken (HTTP/HTTPS/TCP): 1 connection <=> 1 token
+                    // 根据这个事件的 Token 创建一个 session, 并且把 tcp stream 放入到容器中
                     token => self.ready(token, Ready::from(event)),
                 }
             }
@@ -635,6 +643,7 @@ impl Server {
 
             self.should_poll_at = TIMER.with(|timer| timer.borrow().next_poll_date());
 
+            // 僵尸请求检测
             self.zombie_check();
 
             let now = time::OffsetDateTime::now_utc();
@@ -709,23 +718,30 @@ impl Server {
 
     /// Returns true if hardstop
     fn read_channel_messages_and_notify(&mut self) -> bool {
+        // 判断 channel 是否是 可读到的 如果是非可读 直接返回 false
         if !self.channel.readiness().is_readable() {
             return false;
         }
 
+        // 把数据读取到 front_buffer 中
         if let Err(e) = self.channel.readable() {
             error!("error reading from channel: {:?}", e);
         }
 
         loop {
+            // 把 front_buffer 中的数据反序列化为 WorkerRequest
             match self.channel.read_message() {
                 Ok(request) => match request.content.request_type {
+                    // 判断是否是 HardStop, 如果是 HardStop 则返回 true
                     Some(RequestType::HardStop(_)) => {
                         let req_id = request.id.clone();
+                        // 通知 http https tcp proxy 停止
                         self.notify(request);
+                        // 异步响应
                         if let Err(e) = self.channel.write_message(&WorkerResponse::ok(req_id)) {
                             error!("Could not send ok response to the main process: {}", e);
                         }
+                        // 把数据写入到 channel 中
                         if let Err(e) = self.channel.run() {
                             error!("Error while running the server channel: {}", e);
                         }
@@ -1509,6 +1525,7 @@ impl Server {
     }
 
     pub fn accept(&mut self, token: ListenToken, protocol: Protocol) {
+        // 无论是 tcp 还是 http、https 调用 accept 方法都会在具体的协议实现上获取一个 tcp stream 并放入到 accept_queue
         match protocol {
             Protocol::TCPListen => loop {
                 match self.tcp.borrow_mut().accept(token) {
@@ -1530,7 +1547,9 @@ impl Server {
                 }
             },
             Protocol::HTTPListen => loop {
+                // http 协议 accept 新 session, 返回一个 tcp stream
                 match self.http.borrow_mut().accept(token) {
+                    // 把 tcp stream 放入到 accept_queue 中
                     Ok(sock) => self.accept_queue.push_back((
                         sock,
                         token,
@@ -1574,14 +1593,19 @@ impl Server {
     }
 
     pub fn create_sessions(&mut self) {
+        // 创建 session
+        // 从 accept_queue 队列中获取 tcp stream
         while let Some((sock, token, protocol, timestamp)) = self.accept_queue.pop_back() {
+            // 当前时间 - tcp stream 的创建时间
             let wait_time = Instant::now() - timestamp;
             time!("accept_queue.wait_time", wait_time.whole_milliseconds());
+            // 判断等待时间是否大于 accept_queue_timeout 如果大于则放弃创建 session
             if wait_time > self.accept_queue_timeout {
                 incr!("accept_queue.timeout");
                 continue;
             }
 
+            // check session manager 是否达到最大容量
             if !self.sessions.borrow_mut().check_limits() {
                 break;
             }
@@ -1589,6 +1613,7 @@ impl Server {
             //FIXME: check the timestamp
             //TODO: create_session should return the session and
             // the server should insert it in the the SessionManager
+            // 检测协议类型
             match protocol {
                 Protocol::TCPListen => {
                     let proxy = self.tcp.clone();
@@ -1602,6 +1627,7 @@ impl Server {
                     }
                 }
                 Protocol::HTTPListen => {
+                    // clone 一个 proxy
                     let proxy = self.http.clone();
                     if self
                         .http
@@ -1633,9 +1659,12 @@ impl Server {
     pub fn ready(&mut self, token: Token, events: Ready) {
         trace!("PROXY\t{:?} got events: {:?}", token, events);
 
+        // 获取 token
         let session_token = token.0;
+        // 判断 sessionManager 中是否包含此 token, 如果不包含则忽略
         if self.sessions.borrow().slab.contains(session_token) {
             //info!("sessions contains {:?}", session_token);
+            // 从 sessionManager 中 根据 token 获取对应的 session, 并从 session 中获取 protocol
             let protocol = self.sessions.borrow().slab[session_token]
                 .borrow()
                 .protocol();
@@ -1643,14 +1672,19 @@ impl Server {
             match protocol {
                 Protocol::HTTPListen | Protocol::HTTPSListen | Protocol::TCPListen => {
                     //info!("PROTOCOL IS LISTEN");
+                    // 判断 epoll 来的 event 是否是 可读事件
                     if events.is_readable() {
+                        // 如果是可读事件, 则把 token 放入 accept_ready 中
                         self.accept_ready.insert(ListenToken(token.0));
+                        // 判断 session manager 是否能够接受新的请求
                         if self.sessions.borrow().can_accept {
+                            // 创建一个 tcp stream 放入到 accept_queue 中
                             self.accept(ListenToken(token.0), protocol);
                         }
                         return;
                     }
 
+                    // 判断是否可写, 根据逻辑上看 这应该不可能发生
                     if events.is_writable() {
                         error!(
                             "received writable for listener {:?}, this should not happen",
@@ -1659,6 +1693,7 @@ impl Server {
                         return;
                     }
 
+                    // 判断 epoll 对端是否发生了 read close 或者 write close 事件
                     if events.is_hup() {
                         error!("should not happen: server {:?} closed", token);
                         return;
@@ -1669,9 +1704,21 @@ impl Server {
                 _ => {}
             }
 
+            // 获取 session
             let session = self.sessions.borrow_mut().slab[session_token].clone();
+            // 更新 session 的 readiness
+            // 如果是 protocol 是 http、https、tcp 则会调用 session 的 update_readiness 方法
+            // ProxySession -> HttpStateMachine -> 具体的协议的 SessionState
             session.borrow_mut().update_readiness(token, events);
+            // 如果是 protocol 是 http、https、tcp 则会调用 session 的 ready 方法
+            // SessionResult::Close => true,
+            // SessionResult::Continue => false,
+            // SessionResult::Upgrade => match self.upgrade() {
+            //     false => self.ready(session),
+            //     true => true,
+            // },
             if session.borrow_mut().ready(session.clone()) {
+                // 如果返回 true 关闭当前 session
                 self.kill_session(session);
             }
         }
@@ -1692,6 +1739,7 @@ impl Server {
     pub fn handle_remaining_readiness(&mut self) {
         // try to accept again after handling all session events,
         // since we might have released a few session slots
+        // 判断 session manager 是否能 accept 并且 accept ready 集合不为空
         if self.sessions.borrow().can_accept && !self.accept_ready.is_empty() {
             while let Some(token) = self
                 .accept_ready
@@ -1699,6 +1747,7 @@ impl Server {
                 .next()
                 .map(|token| ListenToken(token.0))
             {
+                // 从 session manager 中获取 protocol
                 let protocol = self.sessions.borrow().slab[token.0].borrow().protocol();
                 self.accept(token, protocol);
                 if !self.sessions.borrow().can_accept || self.accept_ready.is_empty() {

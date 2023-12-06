@@ -922,12 +922,14 @@ impl ProxyConfiguration for HttpProxy {
         wait_time: Duration,
         proxy: Rc<RefCell<Self>>,
     ) -> Result<(), AcceptError> {
+        // 获取 token 对应的 listener
         let listener = self
             .listeners
             .get(&Token(listener_token.0))
             .map(Clone::clone)
             .ok_or(AcceptError::IoError)?;
 
+            // 设置 tcp stream 为 nodelay
         if let Err(e) = frontend_sock.set_nodelay(true) {
             error!(
                 "error setting nodelay on front socket({:?}): {:?}",
@@ -936,11 +938,13 @@ impl ProxyConfiguration for HttpProxy {
         }
         let mut session_manager = self.sessions.borrow_mut();
         let session_entry = session_manager.slab.vacant_entry();
+        // 创建一个 token
         let session_token = Token(session_entry.key());
         let owned = listener.borrow();
 
+        // 把 tcp stream 注册到 epoll key 是 session_token , 监听时间为 Interest::READABLE | Interest::WRITABLE,
         if let Err(register_error) = self.registry.register(
-            &mut frontend_sock,
+            &mut frontend_sock, 
             session_token,
             Interest::READABLE | Interest::WRITABLE,
         ) {
@@ -977,6 +981,7 @@ impl ProxyConfiguration for HttpProxy {
         )?;
 
         let session = Rc::new(RefCell::new(session));
+        // session 放入到 session manager 中去
         session_entry.insert(session);
 
         Ok(())
