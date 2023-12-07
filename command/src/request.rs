@@ -34,6 +34,7 @@ impl Request {
             None => return proxy_destination,
         };
 
+        //  通过请求类型判断请求的目的地
         match request_type {
             RequestType::AddHttpFrontend(_) | RequestType::RemoveHttpFrontend(_) => {
                 proxy_destination.to_http_proxy = true

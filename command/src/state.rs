@@ -106,26 +106,27 @@ impl ConfigState {
 
         self.increment_request_count(request);
 
+        // 判断请求的类型 然后做不同的操作
         match request_type {
-            RequestType::AddCluster(cluster) => self.add_cluster(cluster),
-            RequestType::RemoveCluster(cluster_id) => self.remove_cluster(cluster_id),
-            RequestType::AddHttpListener(listener) => self.add_http_listener(listener),
-            RequestType::AddHttpsListener(listener) => self.add_https_listener(listener),
-            RequestType::AddTcpListener(listener) => self.add_tcp_listener(listener),
-            RequestType::RemoveListener(remove) => self.remove_listener(remove),
-            RequestType::ActivateListener(activate) => self.activate_listener(activate),
-            RequestType::DeactivateListener(deactivate) => self.deactivate_listener(deactivate),
-            RequestType::AddHttpFrontend(front) => self.add_http_frontend(front),
-            RequestType::RemoveHttpFrontend(front) => self.remove_http_frontend(front),
-            RequestType::AddCertificate(add) => self.add_certificate(add),
-            RequestType::RemoveCertificate(remove) => self.remove_certificate(remove),
-            RequestType::ReplaceCertificate(replace) => self.replace_certificate(replace),
-            RequestType::AddHttpsFrontend(front) => self.add_https_frontend(front),
-            RequestType::RemoveHttpsFrontend(front) => self.remove_https_frontend(front),
-            RequestType::AddTcpFrontend(front) => self.add_tcp_frontend(front),
-            RequestType::RemoveTcpFrontend(front) => self.remove_tcp_frontend(front),
-            RequestType::AddBackend(add_backend) => self.add_backend(add_backend),
-            RequestType::RemoveBackend(backend) => self.remove_backend(backend),
+            RequestType::AddCluster(cluster) => self.add_cluster(cluster), // 添加一个 cluster 到 clusters 集合中
+            RequestType::RemoveCluster(cluster_id) => self.remove_cluster(cluster_id), // 移除一个 cluster 从 clusters 集中中
+            RequestType::AddHttpListener(listener) => self.add_http_listener(listener), // 添加一个 http listener 到 http_listeners 集合中
+            RequestType::AddHttpsListener(listener) => self.add_https_listener(listener), // 添加 https listener 到 https_listeners 集合中
+            RequestType::AddTcpListener(listener) => self.add_tcp_listener(listener), // 添加 tcp listener 到 tcp_listeners 集合中
+            RequestType::RemoveListener(remove) => self.remove_listener(remove), // 根据类型的不同, 分别从 tcp http https 集合中移除 listener
+            RequestType::ActivateListener(activate) => self.activate_listener(activate), // 根据类型的不同, 分别激活 tcp http https 集合中的 listener
+            RequestType::DeactivateListener(deactivate) => self.deactivate_listener(deactivate), // 根据类型的不同, 分别停用 tcp http https 集合中的 listener
+            RequestType::AddHttpFrontend(front) => self.add_http_frontend(front), // 添加 http frontend 到 http_fronts 集合中
+            RequestType::RemoveHttpFrontend(front) => self.remove_http_frontend(front), // 从 http_fronts 集合中移除 http frontend
+            RequestType::AddCertificate(add) => self.add_certificate(add), // 添加 certificate 到 certificates 集合中
+            RequestType::RemoveCertificate(remove) => self.remove_certificate(remove), // 从 certificates 集合中移除 certificate
+            RequestType::ReplaceCertificate(replace) => self.replace_certificate(replace), // 替换 certificates 集合中的 certificate
+            RequestType::AddHttpsFrontend(front) => self.add_https_frontend(front), // 添加 https frontend 到 https_fronts 集合中
+            RequestType::RemoveHttpsFrontend(front) => self.remove_https_frontend(front), // 从 https_fronts 集合中移除 https frontend
+            RequestType::AddTcpFrontend(front) => self.add_tcp_frontend(front), // 添加 tcp frontend 到 tcp_fronts 集合中
+            RequestType::RemoveTcpFrontend(front) => self.remove_tcp_frontend(front), // 从 tcp_fronts 集合中移除 tcp frontend
+            RequestType::AddBackend(add_backend) => self.add_backend(add_backend), // 添加 backend 到 backends 集合中
+            RequestType::RemoveBackend(backend) => self.remove_backend(backend), // 从 backends 集合中移除 backend
 
             // This is to avoid the error message
             &RequestType::Logging(_)
@@ -505,21 +506,25 @@ impl ConfigState {
 
     fn add_backend(&mut self, add_backend: &AddBackend) -> Result<(), StateError> {
         let backend = Backend {
-            address: parse_socket_address(&add_backend.address)?,
-            cluster_id: add_backend.cluster_id.clone(),
-            backend_id: add_backend.backend_id.clone(),
-            sticky_id: add_backend.sticky_id.clone(),
-            load_balancing_parameters: add_backend.load_balancing_parameters.clone(),
-            backup: add_backend.backup,
+            address: parse_socket_address(&add_backend.address)?, // 后端地址与端口
+            cluster_id: add_backend.cluster_id.clone(), // cluster id
+            backend_id: add_backend.backend_id.clone(), // backend id
+            sticky_id: add_backend.sticky_id.clone(), // 用于 粘连的 id
+            load_balancing_parameters: add_backend.load_balancing_parameters.clone(), // 负载均衡参数
+            backup: add_backend.backup, // 是否为备用节点
         };
+        // 从 backends 中 根据 cluster id 获取 backends 集合
         let backends = self
             .backends
             .entry(backend.cluster_id.clone())
             .or_insert_with(Vec::new);
 
         // we might be modifying the sticky id or load balancing parameters
+        // 从集合中排出 已存在的 backend
         backends.retain(|b| b.backend_id != backend.backend_id || b.address != backend.address);
+        // 放入到集合
         backends.push(backend);
+        // 排序
         backends.sort();
 
         Ok(())

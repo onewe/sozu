@@ -470,6 +470,7 @@ impl Server {
         // config state 是从配置文件中产生, 初始化配置
         // initialize the worker with the state we got from a file
         if let Some(state) = config_state {
+            // 把配置文件中的各种配置转换为 request
             for (counter, request) in state.generate_requests().iter().enumerate() {
                 let id = format!("INIT-{counter}");
                 let worker_request = WorkerRequest {
@@ -478,9 +479,11 @@ impl Server {
                 };
 
                 trace!("generating initial config request: {:#?}", worker_request);
+                // 通知各个代理
                 server.notify_proxys(worker_request);
             }
 
+            // 清空 QUEUE 中的消息, 因为这个配置是从 配置文件中过来的 所以不需要返回消息
             // do not send back answers to the initialization messages
             QUEUE.with(|queue| {
                 // 清空 queue
@@ -851,6 +854,7 @@ impl Server {
         let sessions_count = self.sessions.borrow().slab.len();
         let mut sessions_to_shut_down = HashSet::new();
 
+        // 从 session manager 中找到所有没有正在处理请求的 session, 然后放入到 sessions_to_shut_down 中, 在后续操作中进行关闭
         for (_key, session) in &self.sessions.borrow().slab {
             if session.borrow_mut().shutting_down() {
                 sessions_to_shut_down.insert(Token(session.borrow().frontend_token().0));
@@ -858,8 +862,10 @@ impl Server {
         }
         let _ = self.shut_down_sessions_by_frontend_tokens(sessions_to_shut_down);
 
+        // 获取 session manager 的最新大小
         let new_sessions_count = self.sessions.borrow().slab.len();
 
+        // 如果 new_sessions_count 小于 sessions_count 说明还有 session 正在处理请求
         if new_sessions_count < sessions_count {
             let now = Instant::now();
             if let Some(last) = self.last_shutting_down_message {
@@ -1023,12 +1029,14 @@ impl Server {
     }
 
     pub fn notify_proxys(&mut self, request: WorkerRequest) {
+        // 更新 config state 中的配置
         if let Err(e) = self.config_state.dispatch(&request.content) {
             error!("Could not execute order on config state: {}", e);
         }
 
         let req_id = request.id.clone();
 
+        // 更新 server 中的配置
         match request.content.request_type {
             Some(RequestType::AddCluster(ref cluster)) => {
                 self.add_cluster(cluster);
@@ -1045,17 +1053,25 @@ impl Server {
             _ => {}
         };
 
+        // 通知 各个协议的 proxy
         let proxy_destinations = request.content.get_destinations();
+        // 判断目的地是否是 http proxy
         if proxy_destinations.to_http_proxy {
+            // 通知 http proxy
             push_queue(self.http.borrow_mut().notify(request.clone()));
         }
+        // 判断目的地是否是 https proxy
         if proxy_destinations.to_https_proxy {
+            // 通知 https proxy
             push_queue(self.https.borrow_mut().notify(request.clone()));
         }
+        //判断目的地是否是 tcp proxy
         if proxy_destinations.to_tcp_proxy {
+            // 通知 tcp proxy
             push_queue(self.tcp.borrow_mut().notify(request.clone()));
         }
 
+        // 通知各个协议的 listener
         match request.content.request_type {
             // special case for adding listeners, because we need to register a listener
             Some(RequestType::AddHttpListener(ref listener)) => {
